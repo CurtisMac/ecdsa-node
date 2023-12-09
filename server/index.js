@@ -2,34 +2,72 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const port = 3042;
+const { secp256k1 } = require("ethereum-cryptography/secp256k1");
+const { utf8ToBytes } = require("ethereum-cryptography/utils");
+const { keccak256 } = require("ethereum-cryptography/keccak");
 
 app.use(cors());
 app.use(express.json());
 
-const balances = {
-  "0x1": 100,
-  "0x2": 50,
-  "0x3": 75,
+const accounts = {
+  "024435a6cccf799c1eab465646bb5bbf58bc7624db47bfe34b5ffd476136003065": {
+    balance: 100,
+    nonce: 0,
+  },
+  "03cb94ccd8bd914464e936db4dc4acba07ba322f0e7284ec4ed85cdb267653e68c": {
+    balance: 50,
+    nonce: 0,
+  },
+  "0381a0563f12c398366aaa40a34eb21b5dad55732f28d538da051ea237db390ad6": {
+    balance: 75,
+    nonce: 0,
+  },
 };
 
-app.get("/balance/:address", (req, res) => {
+app.get("/account/:address", (req, res) => {
   const { address } = req.params;
-  const balance = balances[address] || 0;
-  res.send({ balance });
+  res.send({
+    balance: accounts[address]?.balance || 0,
+    nonce: accounts[address]?.nonce || 0,
+  });
 });
 
 app.post("/send", (req, res) => {
-  const { sender, recipient, amount } = req.body;
+  const { amount, nonce, recipient, sender } = req.body.payload;
+
+  try {
+    const signature = JSON.parse(req.body.signature, (key, value) => {
+      return key === "s" || key === "r" ? BigInt(value) : value;
+    });
+    const messageHash = keccak256(
+      utf8ToBytes(JSON.stringify({ ...req.body.payload }))
+    );
+    const isValid = secp256k1.verify(signature, messageHash, sender);
+
+    if (!isValid) {
+      throw new Error();
+    }
+  } catch (error) {
+    res.status(403).send({ message: "Signature not valid" });
+    return;
+  }
 
   setInitialBalance(sender);
   setInitialBalance(recipient);
 
-  if (balances[sender] < amount) {
-    res.status(400).send({ message: "Not enough funds!" });
+  if (accounts[sender].balance < amount) {
+    res.status(403).send({ message: "Not enough funds!" });
+  } else if (nonce <= accounts[sender].nonce) {
+    res.status(403).send({ message: "Transaction already processed!" });
   } else {
-    balances[sender] -= amount;
-    balances[recipient] += amount;
-    res.send({ balance: balances[sender] });
+    accounts[sender].balance -= amount;
+    accounts[recipient].balance += amount;
+    accounts[sender].nonce = nonce;
+
+    res.send({
+      balance: accounts[sender]?.balance,
+      nonce: accounts[sender]?.nonce,
+    });
   }
 });
 
@@ -38,7 +76,10 @@ app.listen(port, () => {
 });
 
 function setInitialBalance(address) {
-  if (!balances[address]) {
-    balances[address] = 0;
+  if (!accounts[address]) {
+    accounts[address] = {
+      balance: 0,
+      nonce: 0,
+    };
   }
 }
